@@ -17,6 +17,10 @@ import { BackendStatus } from "@/components/backend-status"
 import { getCustomerData, refreshConsumption, type CustomerData } from "@/lib/api"
 import { RefreshCw, User, Smartphone, Zap, Activity, Wifi, AlertTriangle } from "lucide-react"
 
+// Configuración de API - misma que usas en tu archivo
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:5000"
+const CUSTOMER_ID = process.env.NEXT_PUBLIC_CUSTOMER_ID || "CUST001"
+
 export default function Dashboard() {
   const [data, setData] = useState<CustomerData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -30,12 +34,88 @@ export default function Dashboard() {
   const [isOnline, setIsOnline] = useState(true)
   const [noDataAlert, setNoDataAlert] = useState(false)
 
+  // Función para obtener datos en tiempo real del backend
+  const loadRealtimeData = async () => {
+    try {
+      console.log('[Dashboard] Cargando datos en tiempo real desde:', `${API_BASE_URL}/api/customer/${CUSTOMER_ID}/realtime`)
+      
+      const response = await fetch(`${API_BASE_URL}/api/customer/${CUSTOMER_ID}/realtime`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        }
+      })
+
+      if (response.ok) {
+        const realtimeData = await response.json()
+        console.log('[Dashboard] Datos en tiempo real obtenidos:', realtimeData)
+        
+        // Transformar los datos para que coincidan con la interfaz
+        const transformedData: CustomerData = {
+          customer: realtimeData.customer,
+          consumption: {
+            data: {
+              used: realtimeData.consumption.data.used,
+              total: realtimeData.consumption.data.total,
+              unit: realtimeData.consumption.data.unit,
+              percentage: realtimeData.consumption.data.percentage,
+              resetDate: realtimeData.consumption.data.reset_date
+            },
+            minutes: {
+              used: realtimeData.consumption.minutes.used,
+              total: realtimeData.consumption.minutes.total,
+              unit: realtimeData.consumption.minutes.unit,
+              percentage: realtimeData.consumption.minutes.percentage,
+              resetDate: realtimeData.consumption.minutes.reset_date
+            },
+            sms: {
+              used: realtimeData.consumption.sms.used,
+              total: realtimeData.consumption.sms.total,
+              unit: realtimeData.consumption.sms.unit,
+              percentage: realtimeData.consumption.sms.percentage,
+              resetDate: realtimeData.consumption.sms.reset_date
+            }
+          },
+          billing: {
+            currentBalance: realtimeData.billing.current_balance,
+            currency: realtimeData.billing.currency,
+            nextBillDate: realtimeData.billing.next_bill_date,
+            monthlyFee: realtimeData.billing.monthly_fee,
+            lastPayment: realtimeData.billing.last_payment || {
+              amount: 0,
+              date: new Date().toISOString().split('T')[0],
+              method: "N/A"
+            }
+          },
+          services: realtimeData.services
+        }
+        
+        return transformedData
+      } else {
+        throw new Error(`Error ${response.status}: ${response.statusText}`)
+      }
+    } catch (error) {
+      console.warn('[Dashboard] Error obteniendo datos en tiempo real:', error)
+      throw error
+    }
+  }
+
   const loadData = async () => {
     try {
       setError(null)
       setNoDataAlert(false)
-      console.log("[v0] Loading customer data...")
-      const customerData = await getCustomerData()
+      console.log("[Dashboard] Cargando datos del cliente...")
+      
+      // Intentar obtener datos en tiempo real primero
+      let customerData: CustomerData
+      try {
+        customerData = await loadRealtimeData()
+        console.log("[Dashboard] Usando datos en tiempo real del backend")
+      } catch (realtimeError) {
+        console.log("[Dashboard] Fallback a método original")
+        customerData = await getCustomerData()
+      }
 
       if (!customerData || !customerData.customer) {
         setNoDataAlert(true)
@@ -47,13 +127,13 @@ export default function Dashboard() {
         setData(customerData)
         setLastUpdated(new Date())
         setNotification({
-          message: "Datos cargados correctamente",
+          message: "Datos cargados correctamente desde la base de datos",
           type: "success",
         })
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Error desconocido"
-      console.error("[v0] Error loading data:", errorMessage)
+      console.error("[Dashboard] Error loading data:", errorMessage)
       setError(errorMessage)
       setNoDataAlert(true)
       setNotification({
@@ -70,20 +150,38 @@ export default function Dashboard() {
 
     try {
       setRefreshing(true)
-      console.log("[v0] Refreshing consumption data...")
-      const updatedConsumption = await refreshConsumption()
-      setData({
-        ...data,
-        consumption: updatedConsumption,
-      })
-      setLastUpdated(new Date())
-      setNotification({
-        message: "Datos actualizados correctamente",
-        type: "success",
-      })
+      console.log("[Dashboard] Actualizando datos...")
+      
+      // Intentar obtener datos actualizados en tiempo real
+      let updatedData: CustomerData
+      try {
+        updatedData = await loadRealtimeData()
+        console.log("[Dashboard] Datos actualizados desde tiempo real")
+        
+        // Actualizar todos los datos, no solo el consumo
+        setData(updatedData)
+        setLastUpdated(new Date())
+        setNotification({
+          message: "Todos los datos actualizados correctamente desde la base de datos",
+          type: "success",
+        })
+      } catch (realtimeError) {
+        console.log("[Dashboard] Fallback a actualización de consumo solamente")
+        const updatedConsumption = await refreshConsumption()
+        setData({
+          ...data,
+          consumption: updatedConsumption,
+        })
+        setLastUpdated(new Date())
+        setNotification({
+          message: "Datos de consumo actualizados correctamente",
+          type: "success",
+        })
+      }
+      
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Error al actualizar datos"
-      console.error("[v0] Error refreshing data:", errorMessage)
+      console.error("[Dashboard] Error refreshing data:", errorMessage)
       setError(errorMessage)
       setNotification({
         message: `Error al actualizar: ${errorMessage}`,
@@ -91,6 +189,24 @@ export default function Dashboard() {
       })
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  // Callback para actualizar el balance cuando se haga una recarga
+  const handleBalanceUpdate = (newBalance: number) => {
+    if (data) {
+      setData({
+        ...data,
+        billing: {
+          ...data.billing,
+          currentBalance: newBalance
+        }
+      })
+      setLastUpdated(new Date())
+      setNotification({
+        message: `Saldo actualizado: ${newBalance.toFixed(2)} ${data.billing.currency}`,
+        type: "success",
+      })
     }
   }
 
@@ -245,7 +361,7 @@ export default function Dashboard() {
               <h2 className="text-2xl font-bold text-balance">¡Hola, {data.customer.name.split(" ")[0]}!</h2>
               <p className="text-muted-foreground">Aquí tienes el resumen de tu consumo y servicios</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Última actualización: {lastUpdated.toLocaleTimeString("es-ES")}
+                Última actualización: {lastUpdated.toLocaleTimeString("es-ES")} - Datos en tiempo real desde BD
               </p>
             </div>
             <Button
@@ -318,7 +434,11 @@ export default function Dashboard() {
           {/* Billing and Services */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             <div className="animate-fade-in stagger-4">
-              <BillingCard data={data.billing} />
+              <BillingCard 
+                data={data.billing} 
+                customerId={CUSTOMER_ID}
+                onBalanceUpdate={handleBalanceUpdate}
+              />
             </div>
             <div className="animate-fade-in stagger-5">
               <ServicesCard services={data.services} />
@@ -360,7 +480,7 @@ export default function Dashboard() {
         <div className="container mx-auto px-4 py-6">
           <div className="text-center text-sm text-muted-foreground animate-fade-in">
             <p>© 2025 TelcoX. Plataforma de autogestión de servicios de telecomunicaciones.</p>
-            <p className="mt-1">Desarrollado para optimizar tu experiencia como cliente.</p>
+            <p className="mt-1">Desarrollado para optimizar tu experiencia como cliente - Datos en tiempo real.</p>
           </div>
         </div>
       </footer>
